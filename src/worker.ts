@@ -60,7 +60,7 @@ async function generateThumbnail(
   const dir = path.dirname(thumbnailPath);
   await fs.mkdir(dir, { recursive: true });
 
-  const cmd = `ffmpeg -i "${originalPath}" -vf "scale=300:-1" -q:v 2 "${thumbnailPath}"`;
+  const cmd = `ffmpeg -i "${originalPath}" -vf "scale=300:-1" -quality 85 "${thumbnailPath}"`;
   const { stderr } = await execAsync(cmd);
 
   if (stderr && !stderr.includes("frame=")) {
