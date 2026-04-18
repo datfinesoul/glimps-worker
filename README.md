@@ -2,38 +2,29 @@
 
 BullMQ job processor for Glimps media pipeline. Handles thumbnail generation, video transcoding, and other CPU-intensive work offloaded from the API server.
 
-## Tool Requirements
+## Development
 
-- **Node.js** 22+
-- **pnpm** 9+
+The harness repo (`glimps/`) runs all services via Docker Compose. See the harness [AGENTS.md](../AGENTS.md) for the standard development workflow.
 
-## Quick Start
-
+**Local iteration (debugging only):**
 ```bash
 cp .env.example .env
 pnpm install
-pnpm run dev
+(set -a && . .env && pnpm run dev)
 ```
 
 ## Commands
 
-| Command | Purpose |
-|---------|---------|
-| `pnpm run dev` | Start worker in dev mode with hot reload |
-| `pnpm run build` | Production build (tsc → dist/) |
-| `pnpm run start` | Run production build |
-| `pnpm run lint` | ESLint |
-| `pnpm run typecheck` | TypeScript |
-| `pnpm run test` | Vitest |
+| Command | Context | Purpose |
+|---------|---------|---------|
+| `pnpm run lint` | docker exec or local | ESLint |
+| `pnpm run typecheck` | docker exec or local | TypeScript |
+| `pnpm run test` | docker exec or local | Vitest |
+| `pnpm run build` | docker exec or local | tsc → dist/ |
 
-## "Works at All" Test
+## Entry Point
 
-```bash
-pnpm install
-pnpm run build
-```
-
-Build must succeed with no errors.
+`src/worker.ts` — BullMQ job processor. No HTTP listener.
 
 ## Stack
 
@@ -43,11 +34,3 @@ Build must succeed with no errors.
 - Pino (structured logging)
 - OpenTelemetry (metrics + tracing)
 - FFmpeg (media processing)
-
-## Service Description
-
-Worker connects to Redis for job queue and PostgreSQL for media status updates. No HTTP listener — runs as a background process. Enqueued jobs come from the API server.
-
-## Development
-
-Worker reads `MEDIA_STORAGE_PATH` from environment to locate media files. Shared volume between API and worker containers ensures media files are accessible to both.

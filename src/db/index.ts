@@ -12,16 +12,11 @@ const log = pino({
       : undefined,
 });
 
-const client = postgres(env.DATABASE_URL, {
+const sql = postgres(env.DATABASE_URL, {
   connect_timeout: 10_000,
   onnotice: (notice) => {
     log.warn({ notice }, "postgres notice");
   },
 });
 
-// @ts-expect-error postgres.Sql does not expose event emitter types
-client.on("error", (err: Error) => {
-  log.error({ err }, "postgres client error");
-});
-
-export const db = drizzle(client, { schema });
+export const db = drizzle(sql, { schema });
