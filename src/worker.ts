@@ -120,7 +120,7 @@ async function transcodePreview(
     : "-c:v libx264 -preset medium -crf 23";
   const cmd = [
     `ffmpeg -i "${originalPath}"`,
-    `-vf "scale='min(1280,iw)':-2"`,
+    `-vf "scale=min(1280,iw):min(720,ih):force_original_aspect_ratio=decrease"`,
     `-r 30`,
     encoder,
     `-c:a aac -b:a 128k`,
