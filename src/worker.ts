@@ -1,9 +1,9 @@
 import { trace, metrics, SpanStatusCode } from "@opentelemetry/api";
-import { createThumbnailWorker, createVideoWorker } from "./services/queue.js";
-import type { VideoJobData } from "./services/queue.js";
+import { createThumbnailWorker, createVideoWorker, thumbnailQueue, videoQueue } from "./services/queue.js";
+import type { VideoJobData, ThumbnailJobData } from "./services/queue.js";
 import { db } from "./db/index.js";
 import { media, jobs } from "./db/schema.js";
-import { eq } from "drizzle-orm";
+import { eq, lt, and } from "drizzle-orm";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs/promises";
@@ -152,7 +152,9 @@ async function processThumbnailJob(jobData: {
       "media.thumbnail_path": thumbnailPath,
     });
 
+    log.info({ jobId, mediaId, step: "generateThumbnail" }, "thumbnail job: starting generateThumbnail");
     await generateThumbnail(originalPath, thumbnailPath);
+    log.info({ jobId, mediaId, step: "generateThumbnail", thumbnailPath }, "thumbnail job: generateThumbnail complete");
 
     await db.update(media).set({
       thumbnailPath,
@@ -210,11 +212,17 @@ async function processVideoJob(jobData: VideoJobData): Promise<void> {
       "gpu.enabled": gpuEnabled,
     });
 
+    log.info({ jobId, mediaId, step: "extractFrame" }, "video job: starting extractFrame");
     await extractFrame(originalPath, thumbnailPath);
+    log.info({ jobId, mediaId, step: "extractFrame", thumbnailPath }, "video job: extractFrame complete");
 
+    log.info({ jobId, mediaId, step: "generateAnimatedThumbnail" }, "video job: starting generateAnimatedThumbnail");
     await generateAnimatedThumbnail(originalPath, animatedThumbnailPath, 5);
+    log.info({ jobId, mediaId, step: "generateAnimatedThumbnail", animatedThumbnailPath }, "video job: generateAnimatedThumbnail complete");
 
+    log.info({ jobId, mediaId, step: "transcodePreview", gpuEnabled }, "video job: starting transcodePreview");
     await transcodePreview(originalPath, previewPath, gpuEnabled);
+    log.info({ jobId, mediaId, step: "transcodePreview", previewPath }, "video job: transcodePreview complete");
 
     await db.update(media).set({
       thumbnailPath,
@@ -253,11 +261,72 @@ async function processVideoJob(jobData: VideoJobData): Promise<void> {
   }
 }
 
+const stuckJobThresholdMs = 10 * 60 * 1000;
+
+async function recoverStuckJobs(): Promise<void> {
+  const stuckThreshold = new Date(Date.now() - stuckJobThresholdMs);
+
+  const stuckJobs = await db
+    .select()
+    .from(jobs)
+    .where(and(eq(jobs.status, "active"), lt(jobs.createdAt, stuckThreshold)));
+
+  if (stuckJobs.length === 0) {
+    log.info("no stuck jobs found");
+    return;
+  }
+
+  log.warn({ count: stuckJobs.length }, "found stuck jobs, recovering");
+
+  for (const job of stuckJobs) {
+    const [mediaRecord] = await db
+      .select()
+      .from(media)
+      .where(eq(media.id, job.mediaId))
+      .limit(1);
+
+    if (!mediaRecord) {
+      log.error({ jobId: job.id, mediaId: job.mediaId }, "stuck job has no associated media, skipping");
+      continue;
+    }
+
+    await db.update(jobs).set({ status: "pending" }).where(eq(jobs.id, job.id));
+    await db.update(media).set({ status: "pending" }).where(eq(media.id, job.mediaId));
+
+    const jobData = {
+      jobId: job.id,
+      mediaId: job.mediaId,
+      originalPath: mediaRecord.originalPath,
+      thumbnailPath: mediaRecord.thumbnailPath ?? "",
+      animatedThumbnailPath: mediaRecord.animatedThumbnailPath ?? "",
+      previewPath: mediaRecord.previewPath ?? "",
+      gpuEnabled: false,
+    };
+
+    if (job.type === "thumbnail") {
+      await thumbnailQueue.add("recover", {
+        jobId: job.id,
+        mediaId: job.mediaId,
+        originalPath: mediaRecord.originalPath,
+        thumbnailPath: mediaRecord.thumbnailPath ?? "",
+      } as ThumbnailJobData, { jobId: job.id });
+      log.info({ jobId: job.id, mediaId: job.mediaId }, "re-queued stuck thumbnail job");
+    } else if (job.type === "video") {
+      await videoQueue.add("recover", jobData, { jobId: job.id });
+      log.info({ jobId: job.id, mediaId: job.mediaId }, "re-queued stuck video job");
+    }
+  }
+
+  log.info({ count: stuckJobs.length }, "stuck job recovery complete");
+}
+
 async function start(): Promise<void> {
   log.info("worker starting");
 
   const gpuEnabled = await detectGpu();
   log.info({ gpuEnabled }, "GPU detection result");
+
+  await recoverStuckJobs();
 
   const thumbnailWorker = createThumbnailWorker(processThumbnailJob);
 
